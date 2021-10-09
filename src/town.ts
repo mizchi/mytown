@@ -2,10 +2,16 @@ type Ptr = string | number;
 
 export type RemoteCommand =
   | {
+      op: "apply";
+      ptr: Ptr;
+      callerPtr?: Ptr;
+      args: RemoteValue[];
+    }
+  | {
       op: "set";
       ptr: Ptr;
-      key: string | number;
-      value: ValueOrPtr;
+      key: string | number; // TODO Iterator
+      value: RemoteValue;
     }
   | {
       op: "access";
@@ -25,7 +31,7 @@ export type ResponsePayload = {
   value: any;
 };
 
-type ValueOrPtr =
+type RemoteValue =
   | {
       isPtr: true;
       ptr: Ptr;
@@ -43,39 +49,53 @@ if (globalThis.document) {
   instanceMap.set("window", window);
 }
 
-export function resolveCommandOnMain(command: RemoteCommand): ValueOrPtr {
+function isTransferrable(raw: any) {
+  return raw == null || ["number", "string", "boolean"].includes(typeof raw);
+}
+
+const raw2remote = (raw: any): RemoteValue => {
+  if (isTransferrable(raw)) {
+    return {
+      isPtr: false,
+      value: raw,
+    };
+  } else {
+    const newPtr = Math.random().toString(32).substr(2);
+    instanceMap.set(newPtr, raw);
+    return {
+      isPtr: true,
+      ptr: newPtr,
+    };
+  }
+};
+export function resolveCommandOnMain(command: RemoteCommand): RemoteValue {
   switch (command.op) {
+    case "access": {
+      const parent = instanceMap.get(command.ptr);
+      const rawValue = parent[command.key];
+      return raw2remote(rawValue);
+    }
     case "set": {
       const parent = instanceMap.get(command.ptr);
       const rightValue = command.value.isPtr
         ? instanceMap.get(command.value.ptr)
         : command.value.value;
       parent[command.key] = rightValue;
-      return {
-        isPtr: false,
-        value: undefined,
-      };
+      return raw2remote(undefined);
     }
-    case "access": {
-      const parent = instanceMap.get(command.ptr);
-      const rawValue = parent[command.key];
-      if (
-        rawValue == null ||
-        ["number", "string", "boolean"].includes(typeof rawValue)
-      ) {
-        return {
-          isPtr: false,
-          value: rawValue,
-        };
+    case "apply": {
+      const fn = instanceMap.get(command.ptr);
+      const rawArgs = command.args.map((value) => {
+        return value.isPtr ? instanceMap.get(value.ptr) : value.value;
+      });
+      let rawValue;
+      if (command.callerPtr) {
+        const caller = instanceMap.get(command.callerPtr);
+        rawValue = fn.apply(caller, rawArgs);
       } else {
-        const childPtr = Math.random().toString(32).substr(2);
-        instanceMap.set(childPtr, rawValue);
-        return {
-          isPtr: true,
-          ptr: childPtr,
-          parentPtr: command.ptr,
-        };
+        rawValue = fn(...rawArgs);
       }
+      return raw2remote(rawValue);
     }
   }
 }
@@ -94,15 +114,34 @@ export function handleMessageOnMain(event: MessageEvent) {
 }
 
 // === worker
-export function createPtr(ptr: any): any {
+export function createPtr(ptr: Ptr, parentPtr?: Ptr): any {
   return new Proxy(() => {}, {
     apply(_target, _thisArg, argumentsList) {
-      // let caller = null;
-      // const realValue = paths.reduce((acc: any, attr) => {
-      //   caller = acc;
-      //   return acc[attr];
-      // }, globalThis);
-      // return realValue.call(caller, argumentsList);
+      const ret = execCommandSyncOnWorker({
+        op: "apply",
+        ptr: ptr,
+        callerPtr: parentPtr,
+        args: argumentsList.map((arg) => {
+          if (isTransferrable(arg)) {
+            return {
+              isPtr: false,
+              value: arg,
+            };
+          }
+          return (
+            arg._ptr ?? {
+              isPtr: false,
+              value: arg,
+            }
+          );
+        }),
+      } as RemoteCommand);
+
+      if (ret.isPtr) {
+        return createPtr(ret.ptr);
+      } else {
+        return ret.value;
+      }
     },
     set(_target, propertyName, value, _receiver) {
       const remoteValue =
@@ -132,8 +171,9 @@ export function createPtr(ptr: any): any {
         ptr: ptr,
         key: propertyName,
       } as RemoteCommand);
+
       if (ret.isPtr) {
-        return createPtr(ret.ptr);
+        return createPtr(ret.ptr, ptr);
       } else {
         return ret.value;
       }
@@ -146,7 +186,7 @@ export const stubDocumentOnWorker = () => {
   globalThis.window = createPtr("window");
 };
 
-export const execCommandSyncOnWorker = (cmd: RemoteCommand): ValueOrPtr => {
+export const execCommandSyncOnWorker = (cmd: RemoteCommand): RemoteValue => {
   const encoded = btoa(JSON.stringify(cmd));
   const url = "/__town?" + encoded;
   let result: any;

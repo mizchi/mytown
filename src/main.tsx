@@ -13,6 +13,7 @@ async function main() {
     api.start();
   };
   postButton.textContent = "start";
+  // api.start
   document.body.appendChild(postButton);
 }
 
