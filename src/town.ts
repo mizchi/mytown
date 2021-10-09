@@ -2,13 +2,15 @@ type Ptr = string | number;
 
 export type RemoteCommand =
   | {
+      op: "set";
+      ptr: Ptr;
+      key: string | number;
+      value: ValueOrPtr;
+    }
+  | {
       op: "access";
       ptr: Ptr;
       key: string | number;
-    }
-  | {
-      op: "ptr";
-      name: Ptr;
     };
 
 export type RequestPayload = {
@@ -34,15 +36,26 @@ type ValueOrPtr =
       value: any;
     };
 
-// on main
+// === main thread
 const instanceMap = new Map<Ptr, any>();
 if (globalThis.document) {
   instanceMap.set("document", document);
   instanceMap.set("window", window);
 }
 
-export function resolveCommandOnMain(command: RemoteCommand) {
+export function resolveCommandOnMain(command: RemoteCommand): ValueOrPtr {
   switch (command.op) {
+    case "set": {
+      const parent = instanceMap.get(command.ptr);
+      const rightValue = command.value.isPtr
+        ? instanceMap.get(command.value.ptr)
+        : command.value.value;
+      parent[command.key] = rightValue;
+      return {
+        isPtr: false,
+        value: undefined,
+      };
+    }
     case "access": {
       const parent = instanceMap.get(command.ptr);
       const rawValue = parent[command.key];
@@ -70,9 +83,8 @@ export function resolveCommandOnMain(command: RemoteCommand) {
 export function handleMessageOnMain(event: MessageEvent) {
   if (event.data.type === "req") {
     const req = event.data as RequestPayload;
-    console.log("[main]", req);
-    console.log("[main-result]", resolveCommandOnMain(req.cmd));
-
+    // console.log("[main]", req);
+    // console.log("[main-result]", resolveCommandOnMain(req.cmd));
     navigator.serviceWorker.controller!.postMessage({
       type: "res",
       id: req.id,
@@ -84,24 +96,38 @@ export function handleMessageOnMain(event: MessageEvent) {
 // === worker
 export function createPtr(ptr: any): any {
   return new Proxy(() => {}, {
-    // apply(_target, _thisArg, argumentsList) {
-    //   let caller = null;
-    //   const realValue = paths.reduce((acc: any, attr) => {
-    //     caller = acc;
-    //     return acc[attr];
-    //   }, globalThis);
-    //   return realValue.call(caller, argumentsList);
-    // },
-    // set(_target, propertyName, value, _receiver) {
-    //   const real = paths.reduce((acc: any, attr) => acc[attr], globalThis);
-    //   real[propertyName] = value;
-    //   return true;
-    // },
+    apply(_target, _thisArg, argumentsList) {
+      // let caller = null;
+      // const realValue = paths.reduce((acc: any, attr) => {
+      //   caller = acc;
+      //   return acc[attr];
+      // }, globalThis);
+      // return realValue.call(caller, argumentsList);
+    },
+    set(_target, propertyName, value, _receiver) {
+      const remoteValue =
+        typeof value === "object" && value._ptr
+          ? value._ptr
+          : {
+              isPtr: false,
+              value,
+            };
+      const _ret = execCommandSyncOnWorker({
+        op: "set",
+        ptr: ptr,
+        key: propertyName,
+        value: remoteValue,
+      } as RemoteCommand);
+      return true;
+    },
     get(_target, propertyName) {
       if (propertyName == "_ptr") {
-        return ptr;
+        return {
+          ptr,
+          isPtr: true,
+        };
       }
-      const ret = accessSyncOnWorker({
+      const ret = execCommandSyncOnWorker({
         op: "access",
         ptr: ptr,
         key: propertyName,
@@ -120,7 +146,7 @@ export const stubDocumentOnWorker = () => {
   globalThis.window = createPtr("window");
 };
 
-export const accessSyncOnWorker = (cmd: any): ValueOrPtr => {
+export const execCommandSyncOnWorker = (cmd: RemoteCommand): ValueOrPtr => {
   const encoded = btoa(JSON.stringify(cmd));
   const url = "/__town?" + encoded;
   let result: any;

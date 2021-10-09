@@ -7,6 +7,7 @@ const api = {
   start() {
     stubDocumentOnWorker();
     log(document.body.textContent);
+    document.body.textContent = "mutated!";
   },
 };
 
