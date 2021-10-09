@@ -1,26 +1,19 @@
-// export {};
-// console.log("x");
-// export {};
-
 import Worker from "./worker?worker";
 import { wrap, Remote } from "comlink";
 import type { Api } from "./worker";
+import { handleMessageOnMain } from "./town";
 
 const api = wrap(new Worker()) as Remote<Api>;
 
-const get = (url: string) => {
-  console.log("get");
-  api.sync();
-};
-
 async function main() {
   const _reg = await navigator.serviceWorker.register("/sw.js");
-  const button = document.createElement("button");
-  button.onclick = () => {
-    const x = get("/sync");
+  navigator.serviceWorker.addEventListener("message", handleMessageOnMain);
+  const postButton = document.createElement("button");
+  postButton.onclick = () => {
+    api.start();
   };
-  button.textContent = "sync";
-  document.body.appendChild(button);
+  postButton.textContent = "start";
+  document.body.appendChild(postButton);
 }
 
 main();

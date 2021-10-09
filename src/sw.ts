@@ -1,34 +1,31 @@
-// import { url } from "inspector";
-
-export {};
-declare const clients: any;
+import {
+  handleFetchOnServiceWorker,
+  handleMessageOnServiceWorker,
+} from "./town";
 
 const log = (...args: any) => console.log("[sw]", ...args);
 
-const version = "7";
+const version = "8";
 
 log("sw", version, Date.now());
 
 self.addEventListener("install", (event: any) => {
   log("install", version);
+  // @ts-ignore
+  event.waitUntil(self.skipWaiting());
 });
 
 self.addEventListener("activate", (event: any) => {
   log("activate claim");
+  // @ts-ignore
   event.waitUntil(clients.claim());
 });
 
 self.addEventListener("fetch", (event: any) => {
-  const req = event.request as Request;
-  const url = new URL(req.url);
-  log("fetch:", req.url);
-  if (url.pathname === "/__town") {
-    log("/sync!");
-    return event.respondWith(handler(req));
+  const url = new URL(event.request.url);
+  if (url.pathname.startsWith("/__town")) {
+    log("handle", "/__town");
+    return event.respondWith(handleFetchOnServiceWorker(event));
   }
 });
-
-async function handler(req: Request) {
-  // console.log("");
-  return new Response("hello");
-}
+self.addEventListener("message", handleMessageOnServiceWorker);
