@@ -3,9 +3,8 @@ import {
   handleMessageOnServiceWorker,
 } from "./town";
 
-const log = (...args: any) => console.log("[sw]", ...args);
-
 const version = "8";
+const log = (...args: any) => console.log("[sw]", ...args);
 
 log("sw", version, Date.now());
 
@@ -16,9 +15,9 @@ self.addEventListener("install", (event: any) => {
 });
 
 self.addEventListener("activate", (event: any) => {
-  log("activate claim");
+  log("activate claim", version);
   // @ts-ignore
-  event.waitUntil(clients.claim());
+  event.waitUntil(self.clients.claim());
 });
 
 self.addEventListener("fetch", (event: any) => {
@@ -28,4 +27,5 @@ self.addEventListener("fetch", (event: any) => {
     return event.respondWith(handleFetchOnServiceWorker(event));
   }
 });
+
 self.addEventListener("message", handleMessageOnServiceWorker);
