@@ -1,16 +1,14 @@
+type Ptr = string | number;
+
 export type RemoteCommand =
   | {
-      op: "apply";
-      paths: string[];
-      args: any[];
-    }
-  | {
       op: "access";
-      paths: string[];
+      ptr: Ptr;
+      key: string | number;
     }
   | {
-      op: "call";
-      paths: string[];
+      op: "ptr";
+      name: Ptr;
     };
 
 export type RequestPayload = {
@@ -25,20 +23,56 @@ export type ResponsePayload = {
   value: any;
 };
 
-export type RemoteObject<T> = T & {
-  _id: any;
-  _value: any;
-};
+type ValueOrPtr =
+  | {
+      isPtr: true;
+      ptr: Ptr;
+      parentPtr?: Ptr;
+    }
+  | {
+      isPtr: false;
+      value: any;
+    };
+
+// on main
+const instanceMap = new Map<Ptr, any>();
+if (globalThis.document) {
+  instanceMap.set("document", document);
+  instanceMap.set("window", window);
+}
 
 export function resolveCommandOnMain(command: RemoteCommand) {
-  if (command.op === "access") {
-    return command.paths.reduce((acc, next) => acc[next], globalThis as any);
+  switch (command.op) {
+    case "access": {
+      const parent = instanceMap.get(command.ptr);
+      const rawValue = parent[command.key];
+      if (
+        rawValue == null ||
+        ["number", "string", "boolean"].includes(typeof rawValue)
+      ) {
+        return {
+          isPtr: false,
+          value: rawValue,
+        };
+      } else {
+        const childPtr = Math.random().toString(32).substr(2);
+        instanceMap.set(childPtr, rawValue);
+        return {
+          isPtr: true,
+          ptr: childPtr,
+          parentPtr: command.ptr,
+        };
+      }
+    }
   }
 }
 
 export function handleMessageOnMain(event: MessageEvent) {
   if (event.data.type === "req") {
     const req = event.data as RequestPayload;
+    console.log("[main]", req);
+    console.log("[main-result]", resolveCommandOnMain(req.cmd));
+
     navigator.serviceWorker.controller!.postMessage({
       type: "res",
       id: req.id,
@@ -47,51 +81,46 @@ export function handleMessageOnMain(event: MessageEvent) {
   }
 }
 
-export function element(root: any = globalThis, paths: string[] = []): any {
+// === worker
+export function createPtr(ptr: any): any {
   return new Proxy(() => {}, {
-    apply(_target, _thisArg, argumentsList) {
-      let caller = null;
-      const realValue = paths.reduce((acc: any, attr) => {
-        caller = acc;
-        return acc[attr];
-      }, root);
-      return realValue.call(caller, argumentsList);
-    },
-    set(_target, propertyName, value, _receiver) {
-      const real = paths.reduce((acc: any, attr) => acc[attr], root);
-      real[propertyName] = value;
-      return true;
-    },
+    // apply(_target, _thisArg, argumentsList) {
+    //   let caller = null;
+    //   const realValue = paths.reduce((acc: any, attr) => {
+    //     caller = acc;
+    //     return acc[attr];
+    //   }, globalThis);
+    //   return realValue.call(caller, argumentsList);
+    // },
+    // set(_target, propertyName, value, _receiver) {
+    //   const real = paths.reduce((acc: any, attr) => acc[attr], globalThis);
+    //   real[propertyName] = value;
+    //   return true;
+    // },
     get(_target, propertyName) {
-      switch (propertyName) {
-        case "_":
-          return paths;
-        case "body": {
-          return element(globalThis, ["document", "body"]);
-        }
-        case "querySelector": {
-          return element();
-        }
-        case "textContent": {
-          return accessSync({
-            op: "access",
-            paths: [...paths, "textContent"],
-          } as RemoteCommand);
-        }
+      if (propertyName == "_ptr") {
+        return ptr;
       }
-      return element([...paths, propertyName as string]);
+      const ret = accessSyncOnWorker({
+        op: "access",
+        ptr: ptr,
+        key: propertyName,
+      } as RemoteCommand);
+      if (ret.isPtr) {
+        return createPtr(ret.ptr);
+      } else {
+        return ret.value;
+      }
     },
   });
 }
 
-export const stubWorkerDocument = () => {
-  // @ts-ignore
-  globalThis.document = element();
-  // @ts-ignore
-  globalThis.window = element();
+export const stubDocumentOnWorker = () => {
+  globalThis.document = createPtr("document");
+  globalThis.window = createPtr("window");
 };
 
-export const accessSync = (cmd: any) => {
+export const accessSyncOnWorker = (cmd: any): ValueOrPtr => {
   const encoded = btoa(JSON.stringify(cmd));
   const url = "/__town?" + encoded;
   let result: any;
@@ -101,7 +130,7 @@ export const accessSync = (cmd: any) => {
     xhr.readyState === 4 && xhr.status === 200 && (result = xhr.responseText);
   xhr.onerror = console.error;
   xhr.send(null);
-  return result;
+  return JSON.parse(result);
 };
 
 // === sw

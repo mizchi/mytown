@@ -1,11 +1,11 @@
 import { expose } from "comlink";
-import { stubWorkerDocument } from "./town";
+import { stubDocumentOnWorker } from "./town";
 
 const log = (...args: any) => console.log("[worker]", ...args);
 
 const api = {
   start() {
-    stubWorkerDocument();
+    stubDocumentOnWorker();
     log(document.body.textContent);
   },
 };
